@@ -1,0 +1,67 @@
+# Rebuilds web/data.json from the YouTube feeds every 3 hours and deploys the site.
+# On success the new data is committed back, so the repo always holds the latest
+# good snapshot (and stays active, which keeps GitHub from pausing this schedule).
+# If the refresh fails (e.g. YouTube blocks the reads), the last committed data
+# is deployed unchanged.
+name: Refresh and deploy
+
+on:
+  schedule:
+    - cron: "42 */3 * * *"   # every 3 hours (UTC)
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["web/**", "pipeline/**", "channels.json", ".github/workflows/**"]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Refresh video data
+        id: refresh
+        continue-on-error: true
+        run: python3 pipeline/run.py
+
+      - name: Commit new data
+        if: steps.refresh.outcome == 'success'
+        run: |
+          git config user.name "barca-watch-bot"
+          git config user.email "barca-watch-bot@users.noreply.github.com"
+          git add web/data.json
+          git diff --cached --quiet || git commit -m "data: refresh $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push
+
+      - name: Note a skipped refresh
+        if: steps.refresh.outcome != 'success'
+        run: echo "::warning::Refresh failed; deploying the last committed data."
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
